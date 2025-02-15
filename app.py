@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, request
+from flask_cors import CORS  # Add this import
 from typing import Dict, List, Tuple, Optional
 import random
 import json
@@ -6,6 +7,7 @@ from datetime import datetime
 import requests
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS
 
 # GitHub repository configuration
 GITHUB_REPO = "dantealegria1/BoreDoom"
@@ -28,24 +30,29 @@ def fetch_activities_from_github() -> None:
     try:
         # Construct the raw GitHub content URL
         github_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{ACTIVITIES_FILE}"
+        print(f"Fetching from URL: {github_url}")  # Debug print
         
         # Fetch the content
         response = requests.get(github_url)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        print(f"Response status: {response.status_code}")  # Debug print
+        response.raise_for_status()
         
         # Parse the JSON content
         global activities_db
         activities_db = json.loads(response.text)
+        print(f"Loaded {len(activities_db)} activities")  # Debug print
         
         # Convert dictionary keys from strings back to tuples
         activities_db = {tuple(eval(k)): v for k, v in activities_db.items()}
         
     except requests.RequestException as e:
         print(f"Error fetching activities from GitHub: {e}")
-        # Load default activities if GitHub fetch fails
         load_default_activities()
     except json.JSONDecodeError as e:
         print(f"Error parsing JSON from GitHub: {e}")
+        load_default_activities()
+    except Exception as e:
+        print(f"Unexpected error: {e}")
         load_default_activities()
 
 def load_default_activities() -> None:
@@ -63,14 +70,45 @@ def load_default_activities() -> None:
             {"name": "Beach volleyball", "description": "Play a fun beach sport"}
         ]
     }
+    print("Loaded default activities")  # Debug print
 
-# Activity history to avoid repetition
-activity_history: List[str] = []
+@app.route('/')
+def home():
+    """Home route to verify API is working."""
+    return jsonify({
+        "message": "Welcome to the Activities API",
+        "endpoints": {
+            "/activity": "Get a random activity",
+            "/categories": "List all categories",
+            "/stats": "Get activity statistics",
+            "/refresh": "Refresh activities from GitHub"
+        }
+    })
+
+@app.route('/activity', methods=['GET'])
+def get_activity():
+    """Get a random activity with optional filtering."""
+    try:
+        if not activities_db:
+            fetch_activities_from_github()
+            
+        preferences = {}
+        for category in categories.keys():
+            if request.args.get(category):
+                preferences[category] = request.args.get(category)
+        
+        return jsonify(generate_activity(preferences))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Rest of your code remains the same...
 
 def generate_activity(preferences: Optional[Dict] = None) -> Dict:
     """Generate an activity based on user preferences."""
+    if not activities_db:
+        load_default_activities()
+        
     if preferences:
-        # Filter activities based on preferences
         possible_combos = [
             combo for combo in activities_db.keys()
             if all(pref in combo for pref in preferences.values())
@@ -78,21 +116,12 @@ def generate_activity(preferences: Optional[Dict] = None) -> Dict:
         if possible_combos:
             combo = random.choice(possible_combos)
         else:
-            # Fallback to random if no matching preferences
             combo = random.choice(list(activities_db.keys()))
     else:
         combo = random.choice(list(activities_db.keys()))
 
     activity = random.choice(activities_db[combo])
     
-    # Avoid recent repetition
-    while activity["name"] in activity_history[-5:]:
-        activity = random.choice(activities_db[combo])
-    
-    activity_history.append(activity["name"])
-    if len(activity_history) > 10:
-        activity_history.pop(0)
-
     return {
         "activity": activity["name"],
         "description": activity["description"],
@@ -104,16 +133,6 @@ def generate_activity(preferences: Optional[Dict] = None) -> Dict:
         },
         "timestamp": datetime.now().isoformat()
     }
-
-@app.route('/activity', methods=['GET'])
-def get_activity():
-    """Get a random activity with optional filtering."""
-    preferences = {}
-    for category in categories.keys():
-        if request.args.get(category):
-            preferences[category] = request.args.get(category)
-    
-    return jsonify(generate_activity(preferences))
 
 @app.route('/categories', methods=['GET'])
 def get_categories():
@@ -129,6 +148,9 @@ def refresh_activities():
 @app.route('/stats', methods=['GET'])
 def get_stats():
     """Get statistics about the activities database."""
+    if not activities_db:
+        fetch_activities_from_github()
+        
     total_activities = sum(len(activities) for activities in activities_db.values())
     stats = {
         "total_activities": total_activities,
@@ -137,7 +159,7 @@ def get_stats():
     }
     
     for combo in activities_db:
-        activity_type = combo[2]  # Index 2 is the "type" category
+        activity_type = combo[2]
         if activity_type not in stats["activities_per_type"]:
             stats["activities_per_type"][activity_type] = 0
         stats["activities_per_type"][activity_type] += len(activities_db[combo])
@@ -146,4 +168,4 @@ def get_stats():
 
 if __name__ == '__main__':
     fetch_activities_from_github()
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=8000)
